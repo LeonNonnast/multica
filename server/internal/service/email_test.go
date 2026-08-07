@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/smtp"
 	"net/textproto"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -205,6 +208,8 @@ func TestNewEmailService_FromEmailResolution(t *testing.T) {
 		smtpHost      string
 		smtpUsername  string
 		smtpFromEmail string
+		mailgunAPIKey string
+		mailgunFrom   string
 		resendFrom    string
 		want          string
 	}{
@@ -229,6 +234,24 @@ func TestNewEmailService_FromEmailResolution(t *testing.T) {
 			want:         "resend@example.com",
 		},
 		{
+			name:          "mailgun mode prefers mailgun from",
+			mailgunAPIKey: "key-123",
+			mailgunFrom:   "sender@example.com",
+			resendFrom:    "resend@example.com",
+			want:          "sender@example.com",
+		},
+		{
+			name:          "mailgun mode falls back to resend from",
+			mailgunAPIKey: "key-123",
+			resendFrom:    "resend@example.com",
+			want:          "resend@example.com",
+		},
+		{
+			name:          "mailgun mode falls back to default when nothing set",
+			mailgunAPIKey: "key-123",
+			want:          "noreply@multica.ai",
+		},
+		{
 			name: "default",
 			want: "noreply@multica.ai",
 		},
@@ -240,6 +263,9 @@ func TestNewEmailService_FromEmailResolution(t *testing.T) {
 			t.Setenv("SMTP_HOST", tt.smtpHost)
 			t.Setenv("SMTP_USERNAME", tt.smtpUsername)
 			t.Setenv("SMTP_FROM_EMAIL", tt.smtpFromEmail)
+			t.Setenv("MAILGUN_API_KEY", tt.mailgunAPIKey)
+			t.Setenv("MAILGUN_DOMAIN", "")
+			t.Setenv("MAILGUN_FROM_EMAIL", tt.mailgunFrom)
 			t.Setenv("RESEND_FROM_EMAIL", tt.resendFrom)
 
 			s := NewEmailService()
@@ -247,6 +273,137 @@ func TestNewEmailService_FromEmailResolution(t *testing.T) {
 				t.Fatalf("fromEmail = %q, want %q", s.fromEmail, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewEmailService_MailgunAPIBaseURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		baseURL string
+		want    string
+	}{
+		{"unset defaults to US region", "", defaultMailgunAPIBaseURL},
+		{"explicit EU region honored", "https://api.eu.mailgun.net", "https://api.eu.mailgun.net"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("RESEND_API_KEY", "")
+			t.Setenv("SMTP_HOST", "")
+			t.Setenv("MAILGUN_API_KEY", "key-123")
+			t.Setenv("MAILGUN_DOMAIN", "mail.example.com")
+			t.Setenv("MAILGUN_API_BASE_URL", tt.baseURL)
+
+			s := NewEmailService()
+			if s.mailgunBaseURL != tt.want {
+				t.Errorf("mailgunBaseURL = %q, want %q", s.mailgunBaseURL, tt.want)
+			}
+			if s.mailgunDomain != "mail.example.com" {
+				t.Errorf("mailgunDomain = %q, want %q", s.mailgunDomain, "mail.example.com")
+			}
+		})
+	}
+}
+
+func TestSendMailgun_Success(t *testing.T) {
+	var gotPath, gotUser, gotPass string
+	var gotForm url.Values
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotUser, gotPass, _ = r.BasicAuth()
+		_ = r.ParseForm()
+		gotForm = r.Form
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"<test@mail.example.com>","message":"Queued"}`))
+	}))
+	defer srv.Close()
+
+	s := &EmailService{
+		fromEmail:      "from@example.com",
+		mailgunAPIKey:  "key-123",
+		mailgunDomain:  "mail.example.com",
+		mailgunBaseURL: srv.URL,
+	}
+
+	if err := s.sendMailgun("to@example.com", "Test Subject", "<p>Hello</p>"); err != nil {
+		t.Fatalf("sendMailgun failed: %v", err)
+	}
+	if gotPath != "/v3/mail.example.com/messages" {
+		t.Errorf("path = %q, want %q", gotPath, "/v3/mail.example.com/messages")
+	}
+	if gotUser != "api" || gotPass != "key-123" {
+		t.Errorf("basic auth = %q/%q, want api/key-123", gotUser, gotPass)
+	}
+	if gotForm.Get("from") != "from@example.com" || gotForm.Get("to") != "to@example.com" ||
+		gotForm.Get("subject") != "Test Subject" || gotForm.Get("html") != "<p>Hello</p>" {
+		t.Errorf("unexpected form values: %v", gotForm)
+	}
+}
+
+func TestSendMailgun_APIErrorSurfacesStatusAndBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+	}))
+	defer srv.Close()
+
+	s := &EmailService{
+		fromEmail:      "from@example.com",
+		mailgunAPIKey:  "bad-key",
+		mailgunDomain:  "mail.example.com",
+		mailgunBaseURL: srv.URL,
+	}
+
+	err := s.sendMailgun("to@example.com", "Test Subject", "<p>Hello</p>")
+	if err == nil {
+		t.Fatal("expected error for 401 response")
+	}
+	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "Forbidden") {
+		t.Errorf("error = %q, want it to mention status 401 and body", err.Error())
+	}
+}
+
+func TestSendVerificationCode_PrefersSMTPOverMailgun(t *testing.T) {
+	srv, cleanup := startTestSMTPServer(t, testSMTPServer{})
+	defer cleanup()
+	host, port, _ := net.SplitHostPort(srv.Addr)
+
+	s := &EmailService{
+		fromEmail: "from@example.com",
+		smtpHost:  host,
+		smtpPort:  port,
+		// mailgunAPIKey pointing at an address nothing listens on: if the SMTP
+		// branch weren't checked first, this would fail loudly instead of
+		// silently succeeding, so the test still catches an ordering regression.
+		mailgunAPIKey:  "key-123",
+		mailgunDomain:  "mail.example.com",
+		mailgunBaseURL: "http://127.0.0.1:1",
+	}
+
+	if err := s.SendVerificationCode("to@example.com", "123456"); err != nil {
+		t.Fatalf("expected SMTP path to succeed, got: %v", err)
+	}
+}
+
+func TestSendVerificationCode_UsesMailgunWhenNoSMTP(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	s := &EmailService{
+		fromEmail:      "from@example.com",
+		mailgunAPIKey:  "key-123",
+		mailgunDomain:  "mail.example.com",
+		mailgunBaseURL: srv.URL,
+	}
+
+	if err := s.SendVerificationCode("to@example.com", "123456"); err != nil {
+		t.Fatalf("expected mailgun path to succeed, got: %v", err)
+	}
+	if !called {
+		t.Fatal("expected mailgun endpoint to be called")
 	}
 }
 

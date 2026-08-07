@@ -61,6 +61,8 @@ Kubernetes에서 shutdown hold를 설정하면 `terminationGracePeriodSeconds`�
 
 ## 이메일과 로그인
 
+여러 제공자를 함께 설정한 경우 우선순위: SMTP → Mailgun → Resend → DEV(인증 코드를 로그에 출력).
+
 ### Resend
 
 | 변수 | 기본값 | 설명 |
@@ -68,9 +70,18 @@ Kubernetes에서 shutdown hold를 설정하면 `terminationGracePeriodSeconds`�
 | `RESEND_API_KEY` | 비어 있음 | 설정하면 Resend 활성화 |
 | `RESEND_FROM_EMAIL` | `noreply@multica.ai` | 발신 주소. 인증된 도메인에 속해야 함 |
 
+### Mailgun
+
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `MAILGUN_API_KEY` | 비어 있음 | 도메인의 private API key. 설정하면 Mailgun 활성화 |
+| `MAILGUN_DOMAIN` | 비어 있음 | 인증된 발신 도메인 |
+| `MAILGUN_API_BASE_URL` | `https://api.mailgun.net` | EU 리전 도메인은 `https://api.eu.mailgun.net`으로 설정. 리전이 맞지 않으면 Mailgun이 요청을 거부함 |
+| `MAILGUN_FROM_EMAIL` | `RESEND_FROM_EMAIL`, 이후 `noreply@multica.ai`로 fallback | 발신 주소 |
+
 ### SMTP
 
-`SMTP_HOST`가 비어 있지 않으면 SMTP가 Resend보다 우선합니다.
+`SMTP_HOST`가 비어 있지 않으면 SMTP가 Mailgun과 Resend보다 우선합니다.
 
 | 변수 | 기본값 | 설명 |
 |---|---|---|

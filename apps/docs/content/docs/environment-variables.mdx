@@ -61,6 +61,8 @@ Self-hosted deployments must set `FRONTEND_ORIGIN`. Without it, invitation links
 
 ## Email and sign-in
 
+Priority when more than one provider is configured: SMTP → Mailgun → Resend → DEV stdout (verification codes print to the log).
+
 ### Resend
 
 | Variable | Default | Description |
@@ -68,9 +70,18 @@ Self-hosted deployments must set `FRONTEND_ORIGIN`. Without it, invitation links
 | `RESEND_API_KEY` | empty | Setting it enables Resend |
 | `RESEND_FROM_EMAIL` | `noreply@multica.ai` | Sender address; must belong to a verified domain |
 
+### Mailgun
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAILGUN_API_KEY` | empty | Domain private API key; setting it enables Mailgun |
+| `MAILGUN_DOMAIN` | empty | Verified sending domain |
+| `MAILGUN_API_BASE_URL` | `https://api.mailgun.net` | Set to `https://api.eu.mailgun.net` for EU-region domains — Mailgun rejects requests sent to the wrong region's host |
+| `MAILGUN_FROM_EMAIL` | falls back to `RESEND_FROM_EMAIL`, then `noreply@multica.ai` | Sender address |
+
 ### SMTP
 
-SMTP takes priority over Resend whenever `SMTP_HOST` is non-empty.
+SMTP takes priority over Mailgun and Resend whenever `SMTP_HOST` is non-empty.
 
 | Variable | Default | Description |
 |---|---|---|

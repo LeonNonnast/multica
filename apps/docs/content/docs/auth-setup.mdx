@@ -11,7 +11,7 @@ Multica signs users in with email verification codes by default; Google OAuth ca
 
 After the user enters an email address, Multica sends a 6-digit verification code. The code is valid for 10 minutes; once it verifies, the browser receives a sign-in cookie.
 
-Email can be delivered through Resend or SMTP. When both are configured, `SMTP_HOST` takes priority.
+Email can be delivered through Resend, Mailgun, or SMTP. When more than one is configured, priority is `SMTP_HOST` → `MAILGUN_API_KEY` → `RESEND_API_KEY`.
 
 ### Using Resend
 
@@ -26,6 +26,20 @@ Email can be delivered through Resend or SMTP. When both are configured, `SMTP_H
 3. Restart the API service.
 
 `RESEND_FROM_EMAIL` must belong to a domain already verified in Resend.
+
+### Using Mailgun
+
+1. Verify a sending domain in [Mailgun](https://www.mailgun.com/) and copy its private API key.
+2. Set:
+
+   ```dotenv
+   MAILGUN_API_KEY=key-xxxxxxxxxxxxxxxx
+   MAILGUN_DOMAIN=mg.example.com
+   MAILGUN_FROM_EMAIL=noreply@example.com
+   ```
+
+3. EU-region domains must also set `MAILGUN_API_BASE_URL=https://api.eu.mailgun.net` — Mailgun rejects requests for an EU domain sent to the default US host (and vice versa). Check which region your domain is on in the Mailgun dashboard.
+4. Restart the API service.
 
 ### Using SMTP
 
@@ -49,6 +63,8 @@ Common connection modes:
 
 If `SMTP_FROM_EMAIL` is unset, it falls back to `RESEND_FROM_EMAIL`. Private CAs or self-signed certificates require adding the CA to the container trust store; `SMTP_TLS_INSECURE=true` skips certificate verification and should only be used temporarily on a trusted internal network.
 
+Mailgun also offers SMTP credentials as an alternative to `MAILGUN_API_KEY` — useful if you'd rather not provision a separate HTTP API key. They are managed separately from the API key in the Mailgun dashboard (Sending → your domain → SMTP credentials).
+
 Some strict relays also require a valid EHLO name:
 
 ```dotenv
@@ -59,7 +75,7 @@ SMTP_EHLO_NAME=mail.example.com
 
 The server still starts, but verification codes and invitation links are only written to the log; no email is sent. This suits local development, not production.
 
-The startup log states whether the current mode is `Resend API`, `SMTP relay`, or `DEV mode`.
+The startup log states whether the current mode is `Resend API`, `Mailgun API`, `SMTP relay`, or `DEV mode`.
 
 ## Fixed local verification code
 

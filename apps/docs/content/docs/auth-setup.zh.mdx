@@ -11,7 +11,7 @@ Multica 默认使用邮箱验证码登录，也可以增加 Google OAuth。已�
 
 用户输入邮箱后，Multica 会发送一个 6 位验证码。验证码 10 分钟内有效，验证成功后浏览器获得登录 cookie。
 
-邮件可以通过 Resend 或 SMTP 发送。两者同时配置时，`SMTP_HOST` 优先。
+邮件可以通过 Resend、Mailgun 或 SMTP 发送。同时配置多个时，优先级为 `SMTP_HOST` → `MAILGUN_API_KEY` → `RESEND_API_KEY`。
 
 ### 使用 Resend
 
@@ -26,6 +26,20 @@ Multica 默认使用邮箱验证码登录，也可以增加 Google OAuth。已�
 3. 重启 API 服务。
 
 `RESEND_FROM_EMAIL` 必须属于已经在 Resend 验证的域名。
+
+### 使用 Mailgun
+
+1. 在 [Mailgun](https://www.mailgun.com/) 验证发信域名，并复制其私有 API key。
+2. 设置：
+
+   ```dotenv
+   MAILGUN_API_KEY=key-xxxxxxxxxxxxxxxx
+   MAILGUN_DOMAIN=mg.example.com
+   MAILGUN_FROM_EMAIL=noreply@example.com
+   ```
+
+3. EU 区域的域名还需设置 `MAILGUN_API_BASE_URL=https://api.eu.mailgun.net`——发往默认 US 主机的 EU 域名请求（反之亦然）会被 Mailgun 拒绝。可在 Mailgun 控制台查看域名所在区域。
+4. 重启 API 服务。
 
 ### 使用 SMTP
 
@@ -49,6 +63,8 @@ SMTP_FROM_EMAIL=noreply@example.com
 
 如果没有设置 `SMTP_FROM_EMAIL`，会回退到 `RESEND_FROM_EMAIL`。私有 CA 或自签证书需要把 CA 加入容器信任库；`SMTP_TLS_INSECURE=true` 会跳过证书校验，只应在可信内网中临时使用。
 
+Mailgun 也提供 SMTP 凭据作为 `MAILGUN_API_KEY` 之外的另一种方式——如果不想单独申请 HTTP API key，可以使用它。SMTP 凭据与 API key 在 Mailgun 控制台中是分开管理的（Sending → 对应域名 → SMTP credentials）。
+
 有些严格的 relay 还要求合法的 EHLO 名称：
 
 ```dotenv
@@ -59,7 +75,7 @@ SMTP_EHLO_NAME=mail.example.com
 
 服务器仍可启动，但验证码和邀请链接只会写入日志，不会发送邮件。这适合本地开发，不适合生产环境。
 
-启动日志会说明当前使用的是 `Resend API`、`SMTP relay` 还是 `DEV mode`。
+启动日志会说明当前使用的是 `Resend API`、`Mailgun API`、`SMTP relay` 还是 `DEV mode`。
 
 ## 本地固定验证码
 

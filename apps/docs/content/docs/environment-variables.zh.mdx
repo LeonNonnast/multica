@@ -61,6 +61,8 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 
 ## 邮件与登录
 
+同时配置多个服务时的优先级：SMTP → Mailgun → Resend → DEV（验证码打印到日志）。
+
 ### Resend
 
 | 变量 | 默认值 | 说明 |
@@ -68,9 +70,18 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `RESEND_API_KEY` | 空 | 设置后启用 Resend |
 | `RESEND_FROM_EMAIL` | `noreply@multica.ai` | 发件地址，必须属于已验证域名 |
 
+### Mailgun
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `MAILGUN_API_KEY` | 空 | 域名的私有 API key；设置后启用 Mailgun |
+| `MAILGUN_DOMAIN` | 空 | 已验证的发件域名 |
+| `MAILGUN_API_BASE_URL` | `https://api.mailgun.net` | EU 区域名需设为 `https://api.eu.mailgun.net`——区域填错会导致 Mailgun 拒绝请求 |
+| `MAILGUN_FROM_EMAIL` | 回退到 `RESEND_FROM_EMAIL`，再回退到 `noreply@multica.ai` | 发件地址 |
+
 ### SMTP
 
-只要 `SMTP_HOST` 非空，SMTP 就会优先于 Resend。
+只要 `SMTP_HOST` 非空，SMTP 就会优先于 Mailgun 和 Resend。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|

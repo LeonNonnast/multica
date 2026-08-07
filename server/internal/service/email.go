@@ -5,10 +5,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"html"
+	"io"
 	"mime"
 	"mime/quotedprintable"
 	"net"
+	"net/http"
 	"net/smtp"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -17,6 +20,11 @@ import (
 
 	"github.com/resend/resend-go/v2"
 )
+
+// defaultMailgunAPIBaseURL is Mailgun's US-region API host. EU-region domains
+// must set MAILGUN_API_BASE_URL to https://api.eu.mailgun.net — Mailgun
+// rejects requests for an EU domain sent to the US host (and vice versa).
+const defaultMailgunAPIBaseURL = "https://api.mailgun.net"
 
 // maxSubjectFieldRunes bounds how much user-controlled text (workspace name,
 // inviter name) can land in an email Subject. Prevents attackers from stuffing
@@ -33,6 +41,9 @@ type EmailService struct {
 	smtpTLSInsecure bool
 	smtpTLSImplicit bool
 	smtpEHLOName    string
+	mailgunAPIKey   string
+	mailgunDomain   string
+	mailgunBaseURL  string
 }
 
 type smtpAuthClient interface {
@@ -111,18 +122,27 @@ func smtpAuthWithFallback(c smtpAuthClient, host, username, password string) (bo
 	return true, plainErr
 }
 
-func resolveFromEmail(smtpHost string) string {
+func resolveFromEmail(smtpHost, mailgunAPIKey string) string {
 	resendFrom := strings.TrimSpace(os.Getenv("RESEND_FROM_EMAIL"))
-	if smtpHost == "" {
+	if smtpHost != "" {
+		if smtpFrom := strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL")); smtpFrom != "" {
+			return smtpFrom
+		}
+		return resendFrom
+	}
+	if mailgunAPIKey != "" {
+		if mailgunFrom := strings.TrimSpace(os.Getenv("MAILGUN_FROM_EMAIL")); mailgunFrom != "" {
+			return mailgunFrom
+		}
 		if resendFrom != "" {
 			return resendFrom
 		}
 		return "noreply@multica.ai"
 	}
-	if smtpFrom := strings.TrimSpace(os.Getenv("SMTP_FROM_EMAIL")); smtpFrom != "" {
-		return smtpFrom
+	if resendFrom != "" {
+		return resendFrom
 	}
-	return resendFrom
+	return "noreply@multica.ai"
 }
 
 func (s *EmailService) openSMTPClient() (*smtp.Client, error) {
@@ -184,7 +204,13 @@ func NewEmailService() *EmailService {
 	smtpUsername := os.Getenv("SMTP_USERNAME")
 	smtpPassword := os.Getenv("SMTP_PASSWORD")
 	smtpTLSInsecure := os.Getenv("SMTP_TLS_INSECURE") == "true"
-	from := resolveFromEmail(smtpHost)
+	mailgunAPIKey := strings.TrimSpace(os.Getenv("MAILGUN_API_KEY"))
+	mailgunDomain := strings.TrimSpace(os.Getenv("MAILGUN_DOMAIN"))
+	mailgunBaseURL := strings.TrimSpace(os.Getenv("MAILGUN_API_BASE_URL"))
+	if mailgunBaseURL == "" {
+		mailgunBaseURL = defaultMailgunAPIBaseURL
+	}
+	from := resolveFromEmail(smtpHost, mailgunAPIKey)
 
 	// EHLO/HELO name, only relevant on the SMTP relay send path. net/smtp defaults
 	// to "localhost", which strict relays (e.g. smtp-relay.gmail.com) reject from a
@@ -231,6 +257,8 @@ func NewEmailService() *EmailService {
 			tlsLabel = "implicit-tls"
 		}
 		fmt.Printf("EmailService: SMTP relay %s:%s (%s) from=%s\n", smtpHost, smtpPort, tlsLabel, from)
+	case mailgunAPIKey != "":
+		fmt.Printf("EmailService: Mailgun API %s domain=%s from=%s\n", mailgunBaseURL, mailgunDomain, from)
 	case client != nil:
 		fmt.Printf("EmailService: Resend API from=%s\n", from)
 	default:
@@ -247,6 +275,9 @@ func NewEmailService() *EmailService {
 		smtpTLSInsecure: smtpTLSInsecure,
 		smtpTLSImplicit: smtpTLSImplicit,
 		smtpEHLOName:    smtpEHLOName,
+		mailgunAPIKey:   mailgunAPIKey,
+		mailgunDomain:   mailgunDomain,
+		mailgunBaseURL:  mailgunBaseURL,
 	}
 }
 
@@ -334,9 +365,41 @@ func (s *EmailService) sendSMTP(to, subject, htmlBody string) error {
 	return c.Quit()
 }
 
+// sendMailgun delivers an HTML email via the Mailgun HTTP API. mailgunBaseURL
+// must match the domain's region (api.mailgun.net for US, api.eu.mailgun.net
+// for EU) — Mailgun returns an error for a domain queried on the wrong host.
+func (s *EmailService) sendMailgun(to, subject, htmlBody string) error {
+	endpoint := strings.TrimRight(s.mailgunBaseURL, "/") + "/v3/" + s.mailgunDomain + "/messages"
+
+	form := url.Values{}
+	form.Set("from", s.fromEmail)
+	form.Set("to", to)
+	form.Set("subject", subject)
+	form.Set("html", htmlBody)
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("mailgun request: %w", err)
+	}
+	req.SetBasicAuth("api", s.mailgunAPIKey)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("mailgun send: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("mailgun send: status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
 // SendVerificationCode sends a one-time login code. The code is server-generated
 // (6-digit numeric) so no user-controlled text reaches the email body here.
-// Delivery priority: SMTP relay → Resend API → DEV stdout.
+// Delivery priority: SMTP relay → Mailgun API → Resend API → DEV stdout.
 func (s *EmailService) SendVerificationCode(to, code string) error {
 	body := fmt.Sprintf(
 		`<div style="font-family: sans-serif; max-width: 400px; margin: 0 auto;">
@@ -346,21 +409,24 @@ func (s *EmailService) SendVerificationCode(to, code string) error {
 			<p style="color: #666; font-size: 14px;">If you didn't request this code, you can safely ignore this email.</p>
 		</div>`, code)
 
-	if s.smtpHost != "" {
+	switch {
+	case s.smtpHost != "":
 		return s.sendSMTP(to, "Your Multica verification code", body)
-	}
-	if s.client == nil {
+	case s.mailgunAPIKey != "":
+		return s.sendMailgun(to, "Your Multica verification code", body)
+	case s.client == nil:
 		fmt.Printf("[DEV] Verification code for %s: %s\n", to, code)
 		return nil
+	default:
+		params := &resend.SendEmailRequest{
+			From:    s.fromEmail,
+			To:      []string{to},
+			Subject: "Your Multica verification code",
+			Html:    body,
+		}
+		_, err := s.client.Emails.Send(params)
+		return err
 	}
-	params := &resend.SendEmailRequest{
-		From:    s.fromEmail,
-		To:      []string{to},
-		Subject: "Your Multica verification code",
-		Html:    body,
-	}
-	_, err := s.client.Emails.Send(params)
-	return err
 }
 
 // SendInvitationEmail notifies the invitee that they have been invited to a workspace.
@@ -371,18 +437,20 @@ func (s *EmailService) SendInvitationEmail(to, inviterName, workspaceName, invit
 		appURL = "https://multica.ai"
 	}
 	inviteURL := fmt.Sprintf("%s/invite/%s", appURL, invitationID)
+	params := buildInvitationParams(s.fromEmail, to, inviterName, workspaceName, inviteURL)
 
-	if s.smtpHost != "" {
-		params := buildInvitationParams(s.fromEmail, to, inviterName, workspaceName, inviteURL)
+	switch {
+	case s.smtpHost != "":
 		return s.sendSMTP(to, params.Subject, params.Html)
-	}
-	if s.client == nil {
+	case s.mailgunAPIKey != "":
+		return s.sendMailgun(to, params.Subject, params.Html)
+	case s.client == nil:
 		fmt.Printf("[DEV] Invitation email to %s: %s invited you to %s — %s\n", to, inviterName, workspaceName, inviteURL)
 		return nil
+	default:
+		_, err := s.client.Emails.Send(params)
+		return err
 	}
-	params := buildInvitationParams(s.fromEmail, to, inviterName, workspaceName, inviteURL)
-	_, err := s.client.Emails.Send(params)
-	return err
 }
 
 // buildInvitationParams assembles the email request for an invitation.

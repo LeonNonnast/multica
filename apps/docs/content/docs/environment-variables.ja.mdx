@@ -61,6 +61,8 @@ Kubernetes で shutdown hold を設定する場合、`terminationGracePeriodSeco
 
 ## メールとログイン
 
+複数のプロバイダーを設定した場合の優先順位: SMTP → Mailgun → Resend → DEV（検証コードはログに出力）。
+
 ### Resend
 
 | 変数 | デフォルト | 説明 |
@@ -68,9 +70,18 @@ Kubernetes で shutdown hold を設定する場合、`terminationGracePeriodSeco
 | `RESEND_API_KEY` | 空 | 設定すると Resend が有効になります |
 | `RESEND_FROM_EMAIL` | `noreply@multica.ai` | 送信元アドレス。検証済みドメインに属している必要があります |
 
+### Mailgun
+
+| 変数 | デフォルト | 説明 |
+|---|---|---|
+| `MAILGUN_API_KEY` | 空 | ドメインの private API key。設定すると Mailgun が有効になります |
+| `MAILGUN_DOMAIN` | 空 | 検証済みの送信ドメイン |
+| `MAILGUN_API_BASE_URL` | `https://api.mailgun.net` | EU リージョンのドメインでは `https://api.eu.mailgun.net` を設定してください。リージョンを誤ると Mailgun がリクエストを拒否します |
+| `MAILGUN_FROM_EMAIL` | `RESEND_FROM_EMAIL`、次に `noreply@multica.ai` にフォールバック | 送信元アドレス |
+
 ### SMTP
 
-`SMTP_HOST` が空でない限り、SMTP が Resend より優先されます。
+`SMTP_HOST` が空でない限り、SMTP が Mailgun と Resend より優先されます。
 
 | 変数 | デフォルト | 説明 |
 |---|---|---|

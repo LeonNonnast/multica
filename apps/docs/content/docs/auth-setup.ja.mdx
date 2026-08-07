@@ -11,7 +11,7 @@ Multica はデフォルトでメール認証コードによるログインを使
 
 ユーザーがメールアドレスを入力すると、Multica は 6 桁の認証コードを送信します。コードは 10 分間有効で、検証に成功するとブラウザにログイン cookie が発行されます。
 
-メールは Resend または SMTP で送信できます。両方を設定した場合は `SMTP_HOST` が優先されます。
+メールは Resend、Mailgun、SMTP のいずれかで送信できます。複数設定した場合の優先順位は `SMTP_HOST` → `MAILGUN_API_KEY` → `RESEND_API_KEY` です。
 
 ### Resend を使う
 
@@ -26,6 +26,20 @@ Multica はデフォルトでメール認証コードによるログインを使
 3. API サービスを再起動します。
 
 `RESEND_FROM_EMAIL` は、Resend で検証済みのドメインに属している必要があります。
+
+### Mailgun を使う
+
+1. [Mailgun](https://www.mailgun.com/) で送信ドメインを検証し、private API key をコピーします。
+2. 次を設定します:
+
+   ```dotenv
+   MAILGUN_API_KEY=key-xxxxxxxxxxxxxxxx
+   MAILGUN_DOMAIN=mg.example.com
+   MAILGUN_FROM_EMAIL=noreply@example.com
+   ```
+
+3. EU リージョンのドメインでは `MAILGUN_API_BASE_URL=https://api.eu.mailgun.net` も設定してください。デフォルトの US ホストに EU ドメインのリクエストを送る（またはその逆の）と Mailgun に拒否されます。ドメインのリージョンは Mailgun ダッシュボードで確認できます。
+4. API サービスを再起動します。
 
 ### SMTP を使う
 
@@ -49,6 +63,8 @@ SMTP_FROM_EMAIL=noreply@example.com
 
 `SMTP_FROM_EMAIL` が未設定の場合は `RESEND_FROM_EMAIL` にフォールバックします。プライベート CA や自己署名証明書を使う場合は、CA をコンテナの信頼ストアに追加してください。`SMTP_TLS_INSECURE=true` は証明書検証をスキップするため、信頼できる内部ネットワークで一時的に使う場合に限ってください。
 
+Mailgun は `MAILGUN_API_KEY` の代わりに SMTP 認証情報も提供しています。別途 HTTP API key を発行したくない場合に使えます。SMTP 認証情報は Mailgun ダッシュボード（Sending → 対象ドメイン → SMTP credentials）で API key とは別に管理されています。
+
 一部の厳格な relay は、有効な EHLO 名も要求します:
 
 ```dotenv
@@ -59,7 +75,7 @@ SMTP_EHLO_NAME=mail.example.com
 
 サーバーは起動しますが、認証コードと招待リンクはログに書き込まれるだけで、メールは送信されません。ローカル開発には向きますが、プロダクションには向きません。
 
-起動ログには、現在使っているのが `Resend API`、`SMTP relay`、`DEV mode` のどれかが表示されます。
+起動ログには、現在使っているのが `Resend API`、`Mailgun API`、`SMTP relay`、`DEV mode` のどれかが表示されます。
 
 ## ローカル固定認証コード
 
